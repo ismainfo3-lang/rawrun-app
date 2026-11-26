@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "RawRun",
+    "slug": "rawrun-app",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "rawrun",
+    "ios": {
+      "bundleIdentifier": "com.rawrun.mobile.dev",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RawRun utiliza tu ubicación para medir la distancia y el ritmo durante una carrera."
+      }
+    },
+    "android": {
+      "package": "com.rawrun.mobile.dev"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "RawRun utiliza tu ubicación para registrar tu carrera."
+        }
+      ]
+    ]
+  }
+}
