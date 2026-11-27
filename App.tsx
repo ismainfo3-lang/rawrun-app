@@ -38,9 +38,11 @@ export default function App() {
       try{
         const saved=await readState();
         const active=await trackingStarted();
-        if(saved.run?.resumeAt!=null && (!active || saved.trackingMode!=='background')){
-          await mutate(s=>s.run?.resumeAt!=null?{...s,run:pause(s.run,Math.max(s.run.resumeAt,s.checkpoint)),trackingError:'Registro interrumpido'}:s);
-        } else if(active && saved.run?.resumeAt==null) await stopTracking();
+        if(saved.run?.resumeAt!=null){
+          // A fresh JS mount cannot certify uninterrupted native GPS coverage.
+          await mutate(s=>s.run?.resumeAt!=null?{...s,run:pause(s.run,Math.max(s.run.resumeAt,s.checkpoint)),trackingError:'Carrera recuperada en pausa'}:s);
+        }
+        if(active)await stopTracking();
         const restored=await readState();
         if(live){setData(restored);if(restored.run)setTab('Correr');setReady(true);}
       }catch{if(live)setStorageError(true);}
@@ -54,14 +56,17 @@ export default function App() {
       if(operation.current)return;
       try{
         const saved=await readState();
+        if(operation.current)return;
         setData(saved);
         if(saved.run?.resumeAt!=null){
           // Check native registration, not just JS state. Pause safely if it disappeared.
-          if(!await trackingStarted()){
-            await mutate(s=>s.run?.resumeAt!=null?{...s,run:pause(s.run,Math.max(s.run.resumeAt,s.checkpoint)),trackingError:'Registro interrumpido'}:s);
+          const registered=await trackingStarted();
+          if(operation.current)return;
+          if(!registered){
+            await mutate(s=>s.run?.id===saved.run?.id&&s.run?.resumeAt!=null&&s.run.resumeAt===saved.run.resumeAt?{...s,run:pause(s.run,Math.max(s.run.resumeAt,s.checkpoint)),trackingError:'Registro interrumpido'}:s);
           }else{
             await mutate(s=>{
-              if(s.run?.resumeAt==null)return s;
+              if(s.run?.resumeAt==null||s.run.id!==saved.run?.id||s.run.resumeAt!==saved.run.resumeAt)return s;
               const offered=s.run.momentStatus==='waiting'&&elapsed(s.run,stamp)>=s.run.momentAtMs;
               if(!offered&&stamp-s.checkpoint<5000)return s;
               return {...s,checkpoint:Math.max(s.checkpoint,stamp),run:offered?{...s.run,momentStatus:'offered'}:s.run};

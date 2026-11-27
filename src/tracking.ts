@@ -6,6 +6,7 @@ const TASK='rawrun-active-location-v1';
 TaskManager.defineTask<{locations:Location.LocationObject[]}>(TASK,async({data,error})=>{
   if(error){
     await updateState(s=>s.run?.resumeAt!=null?{...s,run:pause(s.run,Math.max(s.run.resumeAt,s.checkpoint)),trackingError:'El sistema interrumpió el GPS'}:s);
+    try{await stopTracking();}catch{/* UI reports interruption; user can retry stop. */}
     return;
   }
   if(!data?.locations?.length)return;
