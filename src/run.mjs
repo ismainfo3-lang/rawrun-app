@@ -20,14 +20,14 @@ export function addPoint(run, point) {
       point.timestamp < run.resumeAt || point.accuracy == null || !Number.isFinite(point.accuracy) ||
       point.accuracy < 0 || point.accuracy > 25) return run;
   const prev = run.lastPoint;
-  if (!prev) return {...run, lastPoint: point};
+  if (!prev) return {...run, lastPoint: point, route:[...(run.route??[]),{...point,breakBefore:true}]};
   const dt = (point.timestamp-prev.timestamp)/1000;
   if (dt <= 0) return run;
   const d = distance(prev,point);
-  if (dt > 30) return {...run,lastPoint:point};
+  if (dt > 30) return {...run,lastPoint:point,route:[...(run.route??[]),{...point,breakBefore:true}]};
   if (d < Math.max(3, (point.accuracy + prev.accuracy)*0.35)) return run;
   if (d/dt > 12) return {...run,lastPoint:null};
-  return {...run, distanceM:run.distanceM+d,lastPoint:point};
+  return {...run, distanceM:run.distanceM+d,lastPoint:point,route:[...(run.route??[]),point]};
 }
 export function formatTime(ms) {
   const s = Math.floor(Math.max(0,ms)/1000);

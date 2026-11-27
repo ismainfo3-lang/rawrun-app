@@ -20,7 +20,9 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "RawRun utiliza tu ubicación para registrar tu carrera."
+          "locationWhenInUsePermission": "RawRun utiliza tu ubicación para registrar tu carrera.",
+          "isIosBackgroundLocationEnabled": true,
+          "locationAlwaysAndWhenInUsePermission": "RawRun registra tu carrera cuando bloqueas el iPhone. Solo utiliza la ubicación mientras tienes una carrera activa."
         }
       ]
     ]

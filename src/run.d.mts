@@ -1,5 +1,6 @@
 export type Point = { latitude: number; longitude: number; accuracy: number | null; timestamp: number };
-export type Run = { id: string; startedAt: number; activeMs: number; resumeAt: number | null; distanceM: number; lastPoint: Point | null; momentAtMs: number; momentStatus: 'waiting' | 'offered' | 'skipped' };
+export type RoutePoint = Point & { breakBefore?: boolean };
+export type Run = { id: string; startedAt: number; activeMs: number; resumeAt: number | null; distanceM: number; lastPoint: Point | null; route?: RoutePoint[]; momentAtMs: number; momentStatus: 'waiting' | 'offered' | 'skipped' };
 export function elapsed(run: Run, now: number): number;
 export function pause(run: Run, now: number): Run;
 export function resume(run: Run, now: number): Run;

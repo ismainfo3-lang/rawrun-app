@@ -1,18 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, AppState, Modal, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Alert, AppState, Modal, Pressable, SafeAreaView, ScrollView, StatusBar, Text, TextInput, View } from 'react-native';
 import * as Location from 'expo-location';
 import { theme as t } from './src/theme';
-import { addPoint, elapsed, formatPace, formatTime, pause, resume } from './src/run.mjs';
+import { elapsed, formatPace, formatTime, pause, resume } from './src/run.mjs';
 import type { Run } from './src/run.mjs';
 import { Brand, FrameMark, Action, Section, Metric, WeekChart, Nav, RunCard, s } from './src/ui';
 import { weekSummary } from './src/activity.mjs';
 
 type Tab = 'Hoy' | 'Comunidad' | 'Correr' | 'Actividad' | 'Perfil';
-type Finished = { id: string; startedAt: number; endedAt: number; activeMs: number; distanceM: number };
-type Saved = { run: Run | null; history: Finished[]; checkpoint: number; localProfile?: { name: string; weeklyKm: number } };
-const KEY = 'rawrun.local.v1';
-const initial: Saved = {run:null,history:[],checkpoint:0};
+import { initial, readState, updateState, subscribe, type Saved, type Finished } from './src/session';
+import { startTracking, stopTracking, trackingStarted } from './src/tracking';
 
 export default function App() {
   const [tab,setTab] = useState<Tab>('Hoy');
@@ -25,115 +22,126 @@ export default function App() {
   const [ready,setReady] = useState(false);
   const [now,setNow] = useState(Date.now());
   const [busy,setBusy] = useState(false);
-  const [gps,setGps] = useState('GPS en espera');
   const [storageError,setStorageError] = useState(false);
-  const current = useRef(data);
-  const queue = useRef<Promise<void>>(Promise.resolve());
-  const starting = useRef(false);
+  const operation = useRef(false);
   const run = data.run;
   const running = run != null && run.resumeAt !== null;
-  const activeId = running ? run.id : null;
-
-  function store(next: Saved) {
-    current.current=next;
-    setData(next);
-    queue.current=queue.current.catch(()=>{}).then(async()=>{
-      await AsyncStorage.setItem(KEY,JSON.stringify(next));
-      setStorageError(false);
-    }).catch(()=>setStorageError(true));
+  const gps = running ? (data.trackingError ? 'GPS no disponible' : run.lastPoint && now-run.lastPoint.timestamp<30000 ? 'GPS conectado':'Buscando señal GPS…') : 'GPS en espera';
+  async function mutate(fn:(s:Saved)=>Saved) {
+    try {const next=await updateState(fn);setStorageError(false);return next;}
+    catch(e){setStorageError(true);throw e;}
   }
   useEffect(()=>{
     let live=true;
-    AsyncStorage.getItem(KEY).then(raw=>{
-      if(!live) return;
-      if(raw) {
-        const saved=JSON.parse(raw) as Saved;
-        const recovered={...saved,run:saved.run?pause(saved.run,saved.checkpoint):null};
-        current.current=recovered; setData(recovered);
-        if(recovered.run) setTab('Correr');
-      }
-    }).catch(()=>{if(live)setStorageError(true);}).finally(()=>{if(live)setReady(true);});
-    return ()=>{live=false;};
+    const unsub=subscribe(s=>{if(live)setData(s);});
+    (async()=>{
+      try{
+        const saved=await readState();
+        const active=await trackingStarted();
+        if(saved.run?.resumeAt!=null && (!active || saved.trackingMode!=='background')){
+          await mutate(s=>s.run?.resumeAt!=null?{...s,run:pause(s.run,Math.max(s.run.resumeAt,s.checkpoint)),trackingError:'Registro interrumpido'}:s);
+        } else if(active && saved.run?.resumeAt==null) await stopTracking();
+        const restored=await readState();
+        if(live){setData(restored);if(restored.run)setTab('Correr');setReady(true);}
+      }catch{if(live)setStorageError(true);}
+    })();
+    return()=>{live=false;unsub();};
   },[]);
   useEffect(()=>{
-    const timer=setInterval(()=>{
+    if(!ready)return;
+    const refresh=async()=>{
       const stamp=Date.now();setNow(stamp);
-      const s=current.current;
-      if(s.run?.resumeAt!=null && stamp-s.checkpoint>=5000) store({...s,checkpoint:stamp});
-    },1000);
-    return ()=>clearInterval(timer);
-  },[]);
-  useEffect(()=>{
-    const sub=AppState.addEventListener('change',state=>{
-      const s=current.current;
-      if(state!=='active' && s.run?.resumeAt!=null) {
-        const stamp=Date.now();
-        store({...s,run:pause(s.run,stamp),checkpoint:stamp});
-      }
-    });
-    return ()=>sub.remove();
-  },[]);
-  useEffect(()=>{
-    if(!activeId){setGps('GPS en espera');return;}
-    let live=true;
-    let sub: Location.LocationSubscription | undefined;
-    setGps('Buscando señal GPS…');
-    Location.watchPositionAsync({accuracy:Location.Accuracy.High,timeInterval:1000,distanceInterval:3},loc=>{
-      if(!live) return;
-      const s=current.current;
-      if(!s.run || s.run.id!==activeId || s.run.resumeAt===null) return;
-      const point={latitude:loc.coords.latitude,longitude:loc.coords.longitude,accuracy:loc.coords.accuracy,timestamp:loc.timestamp};
-      const next=addPoint(s.run,point);
-      setGps(point.accuracy!==null && point.accuracy<=25?'GPS conectado':'Buscando mejor señal…');
-      if(next!==s.run) store({...s,run:next,checkpoint:Date.now()});
-    }).then(v=>{if(live)sub=v;else v.remove();}).catch(()=>{
-      if(!live)return;
-      setGps('GPS no disponible');
-      const s=current.current;
-      if(s.run?.id===activeId)store({...s,run:pause(s.run,Date.now()),checkpoint:Date.now()});
-    });
-    return ()=>{live=false;sub?.remove();};
-  },[activeId]);
-  useEffect(()=>{
-    const s=current.current;
-    if(s.run && s.run.resumeAt!==null && s.run.momentStatus==='waiting' && elapsed(s.run,now)>=s.run.momentAtMs) {
-      store({...s,run:{...s.run,momentStatus:'offered'},checkpoint:now});
-    }
-  },[now]);
+      if(operation.current)return;
+      try{
+        const saved=await readState();
+        setData(saved);
+        if(saved.run?.resumeAt!=null){
+          // Check native registration, not just JS state. Pause safely if it disappeared.
+          if(!await trackingStarted()){
+            await mutate(s=>s.run?.resumeAt!=null?{...s,run:pause(s.run,Math.max(s.run.resumeAt,s.checkpoint)),trackingError:'Registro interrumpido'}:s);
+          }else{
+            await mutate(s=>{
+              if(s.run?.resumeAt==null)return s;
+              const offered=s.run.momentStatus==='waiting'&&elapsed(s.run,stamp)>=s.run.momentAtMs;
+              if(!offered&&stamp-s.checkpoint<5000)return s;
+              return {...s,checkpoint:Math.max(s.checkpoint,stamp),run:offered?{...s.run,momentStatus:'offered'}:s.run};
+            });
+          }
+        }
+      }catch{setStorageError(true);}
+    };
+    let refreshing=false;
+    const tick=()=>{if(AppState.currentState!=='active'||refreshing)return;refreshing=true;void refresh().finally(()=>{refreshing=false;});};
+    const timer=setInterval(tick,1000);
+    const sub=AppState.addEventListener('change',state=>{if(state==='active')tick();});
+    return()=>{clearInterval(timer);sub.remove();};
+  },[ready]);
 
   async function startOrResume() {
-    if(!ready || starting.current)return;
-    starting.current=true;setBusy(true);
-    try {
-      const permission=await Location.requestForegroundPermissionsAsync();
-      if(permission.status!=='granted'){Alert.alert('Permiso necesario','Activa la ubicación para registrar la distancia.');return;}
+    if(!ready||operation.current)return;
+    operation.current=true;setBusy(true);
+    let startedId:string|null=null;
+    try{
+      const foreground=await Location.requestForegroundPermissionsAsync();
+      if(foreground.status!=='granted'){Alert.alert('Permiso necesario','Activa la ubicación para registrar la distancia.');return;}
       if(!await Location.hasServicesEnabledAsync()){Alert.alert('GPS desactivado','Activa la ubicación del iPhone.');return;}
-      const stamp=Date.now(),s=current.current;
-      if(s.run?.resumeAt!=null)return;
-      const next:Run=s.run?resume(s.run,stamp):{
+      const background=await Location.requestBackgroundPermissionsAsync();
+      if(background.status!=='granted'){
+        Alert.alert('Ubicación en segundo plano','Para registrar con la pantalla bloqueada, permite Siempre en Ajustes > RawRun > Localización. Puedes volver a intentarlo después.');return;
+      }
+      const saved=await readState();
+      if(saved.run?.resumeAt!=null)return;
+      if(await trackingStarted())await stopTracking();
+      const stamp=Date.now();
+      const next:Run=saved.run?resume(saved.run,stamp):{
         id:stamp.toString(36)+'-'+Math.random().toString(36).slice(2),startedAt:stamp,activeMs:0,resumeAt:stamp,distanceM:0,lastPoint:null,
-        momentAtMs:(10+Math.random()*8)*60000,momentStatus:'waiting',
+        momentAtMs:(10+Math.random()*8)*60000,momentStatus:'waiting',route:[],
       };
-      store({...s,run:next,checkpoint:stamp});setNow(stamp);setTab('Correr');
-    }catch{Alert.alert('No se pudo iniciar','Comprueba los permisos y vuelve a intentarlo.');}
-    finally{starting.current=false;setBusy(false);}
+      startedId=next.id;
+      await mutate(s=>({...s,run:next,checkpoint:stamp,trackingMode:'background',trackingError:undefined}));
+      await startTracking();
+      setNow(stamp);setTab('Correr');
+    }catch{
+      if(startedId){
+        try{await mutate(s=>s.run?.id===startedId?{...s,run:pause(s.run,Math.max(s.run.resumeAt??0,s.checkpoint)),trackingError:'No se pudo iniciar el GPS'}:s);}catch{}
+        try{await stopTracking();}catch{}
+      }
+      Alert.alert('No se pudo iniciar','Comprueba los permisos, la compilación nativa y vuelve a intentarlo.');
+    }finally{operation.current=false;setBusy(false);}
   }
-  function stop() {
-    const s=current.current;if(!s.run)return;
-    const stamp=Date.now();store({...s,run:pause(s.run,stamp),checkpoint:stamp});setNow(stamp);
+  async function stop(){
+    if(operation.current)return false;
+    operation.current=true;setBusy(true);
+    try{
+      const stamp=Date.now();
+      await mutate(s=>s.run?{...s,run:pause(s.run,stamp),checkpoint:stamp}:s);
+      setNow(stamp);
+      await stopTracking();
+      return true;
+    }catch{Alert.alert('No se pudo detener correctamente','Vuelve a pulsar Pausar antes de cerrar.');return false;}
+    finally{operation.current=false;setBusy(false);}
   }
-  function finish() {
-    stop();
+  async function finish(){
+    if(!await stop())return;
     Alert.alert('Finalizar carrera','Se guardará en este dispositivo.',[
       {text:'Cancelar',style:'cancel'},
-      {text:'Guardar',onPress:()=>{
-        const s=current.current;if(!s.run)return;
-        const stamp=Date.now(),r=pause(s.run,stamp);
-        const finished={id:r.id,startedAt:r.startedAt,endedAt:stamp,activeMs:r.activeMs,distanceM:r.distanceM};
-        store({...s,run:null,checkpoint:stamp,history:[finished,...s.history]});
-        setDetail(finished);setActivityView('Diario');setTab('Actividad');
-      }}
+      {text:'Guardar',onPress:()=>{void saveFinished();}}
     ]);
+  }
+  async function saveFinished(){
+    if(operation.current)return;
+    operation.current=true;setBusy(true);
+    try{
+      let finished:Finished|undefined;
+      await mutate(s=>{
+        if(!s.run||s.run.resumeAt!==null)return s;
+        const stamp=Date.now(),r=s.run;
+        finished={id:r.id,startedAt:r.startedAt,endedAt:stamp,activeMs:r.activeMs,distanceM:r.distanceM,route:r.route??[]};
+        return {...s,run:null,checkpoint:stamp,history:[finished,...s.history],trackingError:undefined};
+      });
+      if(finished){setDetail(finished);setActivityView('Diario');setTab('Actividad');}
+    }catch{Alert.alert('No se pudo guardar','La carrera sigue disponible para volver a intentarlo.');}
+    finally{operation.current=false;setBusy(false);}
   }
   const time=run?elapsed(run,now):0;
   const meters=run?.distanceM??0;
@@ -144,7 +152,7 @@ export default function App() {
   const goRun=()=>setTab('Correr');
   const selectRun=(r:Finished)=>setDetail(r);
   function openProfile(){setNameDraft(profile.name);setGoalDraft(String(profile.weeklyKm));setEditProfile(true);}
-  function saveProfile(){const goal=Number(goalDraft.replace(',','.'));if(!Number.isFinite(goal)||goal<1||goal>300){Alert.alert('Objetivo semanal','Introduce un objetivo entre 1 y 300 km.');return;}store({...current.current,localProfile:{name:nameDraft.trim().slice(0,60),weeklyKm:goal}});setEditProfile(false);}
+  function saveProfile(){const goal=Number(goalDraft.replace(',','.'));if(!Number.isFinite(goal)||goal<1||goal>300){Alert.alert('Objetivo semanal','Introduce un objetivo entre 1 y 300 km.');return;}void mutate(s=>({...s,localProfile:{name:nameDraft.trim().slice(0,60),weeklyKm:goal}})).then(()=>setEditProfile(false)).catch(()=>Alert.alert('No se pudo guardar el perfil'));}
 
   return <SafeAreaView style={s.safe}>
     <StatusBar barStyle="dark-content"/>
@@ -175,10 +183,10 @@ export default function App() {
         <View style={s.spread}><View style={s.heading}><Text style={s.micro}>03 / EN MOVIMIENTO</Text><Text style={s.display}>Correr.</Text></View><View style={s.status}><View style={[s.dot,{backgroundColor:running&&gps==='GPS conectado'?'#557C38':t.mist}]}/><Text style={s.micro}>{gps==='GPS conectado'?'GPS OK':running?'GPS…':'GPS'}</Text></View></View>
         <View style={s.runPanel}><View style={s.spread}><Text style={s.lightMicro}>{running?'EN CURSO':run?'EN PAUSA':'LISTO PARA SALIR'}</Text><FrameMark size={30} color={t.signal}/></View><Text adjustsFontSizeToFit numberOfLines={1} style={s.timer}>{formatTime(time)}</Text><Text style={s.lightMicro}>TIEMPO ACTIVO</Text><View style={s.darkDivider}/><Text style={s.distance}>{(meters/1000).toFixed(2)}<Text style={s.distanceUnit}> km</Text></Text><Text style={s.lightMicro}>DISTANCIA</Text><View style={s.darkDivider}/><View style={s.spread}><Text style={s.lightMicro}>RITMO MEDIO</Text><Text style={s.pace}>{formatPace(time,meters)} <Text style={s.lightMicro}>/ KM</Text></Text></View></View>
         <View style={s.surface}><View style={s.spread}><Text style={s.label}>Raw Moment</Text><FrameMark size={24} color={t.ink}/></View><View style={s.timeline}><View style={[s.timelineFill,{width:`${Math.min(100,time/600000*100)}%`}]}/><View style={s.timelineMarker}/></View><Text style={s.muted}>{run?.momentStatus==='skipped'?'Omitido en esta carrera.':run?.momentStatus==='offered'?'Tu momento ha llegado.': 'A partir de 10 minutos activos puede aparecer tu momento.'}</Text></View>
-        {run?.momentStatus==='offered'&&<View style={s.signalSurface}><Text style={s.h2}>Es tu momento.</Text><Text style={s.body}>La cámara aún no está habilitada. Puedes continuar sin foto.</Text><Action label="Continuar sin foto" onPress={()=>{const v=current.current;if(v.run)store({...v,run:{...v.run,momentStatus:'skipped'},checkpoint:Date.now()});}}/></View>}
-        {running?<Action label="Pausar carrera" onPress={stop} kind="signal"/>:<Action label={busy?'Comprobando GPS…':run?'Reanudar carrera':'Iniciar carrera'} onPress={startOrResume} disabled={!ready||busy} kind="signal"/>}
-        {run&&<Action label="Finalizar y guardar" onPress={finish} kind="outline"/>}
-        <Text style={s.muted}>En esta versión el GPS necesita la app abierta. Al bloquear el iPhone se pausa la carrera.</Text>
+        {run?.momentStatus==='offered'&&<View style={s.signalSurface}><Text style={s.h2}>Es tu momento.</Text><Text style={s.body}>La cámara aún no está habilitada. Puedes continuar sin foto.</Text><Action label="Continuar sin foto" onPress={()=>{void mutate(v=>v.run?{...v,run:{...v.run,momentStatus:'skipped'},checkpoint:Date.now()}:v).catch(()=>Alert.alert('No se pudo guardar'));}}/></View>}
+        {running?<Action label="Pausar carrera" onPress={()=>{void stop();}} disabled={busy} kind="signal"/>:<Action label={busy?'Comprobando GPS…':run?'Reanudar carrera':'Iniciar carrera'} onPress={startOrResume} disabled={!ready||busy} kind="signal"/>}
+        {run&&<Action label="Finalizar y guardar" onPress={()=>{void finish();}} disabled={busy} kind="outline"/>}
+        <Text style={s.muted}>{data.trackingError?data.trackingError+" · ":""}GPS en segundo plano habilitado para pruebas. No fuerces el cierre de la app durante una carrera.</Text>
       </>}
       {tab==='Actividad'&&<>
         <View style={s.heading}><Text style={s.micro}>04 / TU EVOLUCIÓN</Text><Text style={s.display}>Actividad.</Text></View>
