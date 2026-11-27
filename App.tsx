@@ -58,15 +58,25 @@ export default function App() {
         const saved=await readState();
         if(operation.current)return;
         setData(saved);
-        if(saved.run?.resumeAt!=null){
+        const savedRun = saved.run;
+        if (savedRun?.resumeAt != null) {
           // Check native registration, not just JS state. Pause safely if it disappeared.
           const registered=await trackingStarted();
           if(operation.current)return;
           if(!registered){
-            await mutate(s=>s.run?.id===saved.run?.id&&s.run?.resumeAt!=null&&s.run.resumeAt===saved.run.resumeAt?{...s,run:pause(s.run,Math.max(s.run.resumeAt,s.checkpoint)),trackingError:'Registro interrumpido'}:s);
+            await mutate(state => {
+              const activeRun = state.run;
+              if (activeRun?.id !== savedRun.id || activeRun.resumeAt == null ||
+                  activeRun.resumeAt !== savedRun.resumeAt) return state;
+              return {
+                ...state,
+                run: pause(activeRun, Math.max(activeRun.resumeAt, state.checkpoint)),
+                trackingError: 'Registro interrumpido',
+              };
+            });
           }else{
             await mutate(s=>{
-              if(s.run?.resumeAt==null||s.run.id!==saved.run?.id||s.run.resumeAt!==saved.run.resumeAt)return s;
+              if(s.run?.resumeAt==null||s.run.id!==savedRun.id||s.run.resumeAt!==savedRun.resumeAt)return s;
               const offered=s.run.momentStatus==='waiting'&&elapsed(s.run,stamp)>=s.run.momentAtMs;
               if(!offered&&stamp-s.checkpoint<5000)return s;
               return {...s,checkpoint:Math.max(s.checkpoint,stamp),run:offered?{...s.run,momentStatus:'offered'}:s.run};
