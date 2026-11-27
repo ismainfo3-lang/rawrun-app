@@ -1,19 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, AppState, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, Modal, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { theme as t } from './src/theme';
 import { addPoint, elapsed, formatPace, formatTime, pause, resume } from './src/run.mjs';
 import type { Run } from './src/run.mjs';
+import { Brand, FrameMark, Action, Section, Metric, WeekChart, Nav, RunCard, s } from './src/ui';
+import { weekSummary } from './src/activity.mjs';
 
-type Tab = 'Hoy' | 'Correr' | 'Memorias' | 'Perfil';
+type Tab = 'Hoy' | 'Comunidad' | 'Correr' | 'Actividad' | 'Perfil';
 type Finished = { id: string; startedAt: number; endedAt: number; activeMs: number; distanceM: number };
-type Saved = { run: Run | null; history: Finished[]; checkpoint: number };
+type Saved = { run: Run | null; history: Finished[]; checkpoint: number; localProfile?: { name: string; weeklyKm: number } };
 const KEY = 'rawrun.local.v1';
 const initial: Saved = {run:null,history:[],checkpoint:0};
 
 export default function App() {
   const [tab,setTab] = useState<Tab>('Hoy');
+  const [detail,setDetail] = useState<Finished | null>(null);
+  const [activityView,setActivityView] = useState<'Semana' | 'Diario'>('Semana');
+  const [editProfile,setEditProfile] = useState(false);
+  const [nameDraft,setNameDraft] = useState('');
+  const [goalDraft,setGoalDraft] = useState('20');
   const [data,setData] = useState<Saved>(initial);
   const [ready,setReady] = useState(false);
   const [now,setNow] = useState(Date.now());
@@ -122,59 +129,82 @@ export default function App() {
       {text:'Guardar',onPress:()=>{
         const s=current.current;if(!s.run)return;
         const stamp=Date.now(),r=pause(s.run,stamp);
-        store({run:null,checkpoint:stamp,history:[{id:r.id,startedAt:r.startedAt,endedAt:stamp,activeMs:r.activeMs,distanceM:r.distanceM},...s.history]});
-        setTab('Memorias');
+        const finished={id:r.id,startedAt:r.startedAt,endedAt:stamp,activeMs:r.activeMs,distanceM:r.distanceM};
+        store({...s,run:null,checkpoint:stamp,history:[finished,...s.history]});
+        setDetail(finished);setActivityView('Diario');setTab('Actividad');
       }}
     ]);
   }
   const time=run?elapsed(run,now):0;
   const meters=run?.distanceM??0;
   const total=data.history.reduce((sum,r)=>sum+r.distanceM,0);
+  const profile=data.localProfile??{name:'',weeklyKm:20};
+  const week=weekSummary(data.history,now);
+  const progress=Math.min(1,week.distanceM/(profile.weeklyKm*1000));
+  const goRun=()=>setTab('Correr');
+  const selectRun=(r:Finished)=>setDetail(r);
+  function openProfile(){setNameDraft(profile.name);setGoalDraft(String(profile.weeklyKm));setEditProfile(true);}
+  function saveProfile(){const goal=Number(goalDraft.replace(',','.'));if(!Number.isFinite(goal)||goal<1||goal>300){Alert.alert('Objetivo semanal','Introduce un objetivo entre 1 y 300 km.');return;}store({...current.current,localProfile:{name:nameDraft.trim().slice(0,60),weeklyKm:goal}});setEditProfile(false);}
 
-  return <SafeAreaView style={styles.safe}>
+  return <SafeAreaView style={s.safe}>
     <StatusBar barStyle="dark-content"/>
-    <View style={styles.header}><Text style={styles.brand}>rawrun<Text style={{color:'#718644'}}>.</Text></Text><Text style={styles.tag}>RAW / FRAME</Text></View>
-    <ScrollView contentContainerStyle={styles.content}>
-      {!ready&&<Text style={styles.muted}>Cargando tus datos…</Text>}
-      {storageError&&<Text style={styles.warning}>No se pudo leer o guardar el estado local. No cierres la app hasta revisar el almacenamiento.</Text>}
+    <View style={s.header}><Brand/><View style={s.headerRight}><Text style={s.micro}>{new Date(now).toLocaleDateString('es-ES',{day:'2-digit',month:'short'}).toUpperCase()}</Text><Pressable accessibilityRole="button" accessibilityLabel="Mi perfil" onPress={()=>setTab('Perfil')} style={s.avatarSmall}><Text style={s.avatarText}>{profile.name.slice(0,1).toUpperCase()||'R'}</Text></Pressable></View></View>
+    <ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      {!ready&&<Text style={s.muted}>Cargando tu diario…</Text>}
+      {storageError&&<Text style={s.error}>No se pudo leer o guardar el estado local. Revisa el almacenamiento antes de cerrar.</Text>}
       {tab==='Hoy'&&<>
-        <Text style={styles.kicker}>TU HISTORIA EN MOVIMIENTO</Text>
-        <Text style={styles.h1}>Hoy.</Text>
-        <View style={styles.hero}><Text style={styles.heroSmall}>01 / CADA CARRERA DEJA ALGO</Text><Text style={styles.heroTitle}>No solo{ '\n' }kilómetros.</Text><View style={styles.line}/><Text style={styles.heroBody}>Sal a correr. Vive el momento.</Text><Action label={run?'Volver a mi carrera':'Empezar a correr'} onPress={()=>setTab('Correr')} signal/></View>
-        <Text style={styles.h2}>Tu actividad</Text><View style={styles.row}><Metric label="Kilómetros" value={(total/1000).toFixed(2)}/><Metric label="Carreras" value={String(data.history.length)}/></View>
-        <Text style={styles.muted}>Vista local de desarrollo. El feed social se conectará en una fase posterior.</Text>
+        <View style={s.heading}><Text style={s.micro}>TU HISTORIA EN MOVIMIENTO</Text><Text style={s.display}>Hoy.</Text><Text style={s.body}>{profile.name?'Hola, '+profile.name+'.':'Cada carrera deja algo.'}</Text></View>
+        <View style={s.feature}>
+          <View style={s.spread}><Text style={s.lightMicro}>RAW / FRAME</Text><Text style={s.lightMicro}>001</Text></View>
+          <View style={s.featureArt}><FrameMark size={148} color={t.signal}/><View style={s.orbitOne}/><View style={s.orbitTwo}/></View>
+          <Text style={s.featureTitle}>No todos los kilómetros se recuerdan.</Text><Text style={s.featureSub}>Algunos momentos, sí.</Text>
+          <Action label={run?'Volver a mi carrera':'Salir a correr'} onPress={goRun} kind="signal"/>
+        </View>
+        <Section title="Esta semana" link="Ver actividad" onPress={()=>{setActivityView('Semana');setTab('Actividad');}}/>
+        <View style={s.statsRow}><Metric value={(week.distanceM/1000).toFixed(1)} unit="km" label="DISTANCIA"/><Metric value={String(week.count)} label="CARRERAS"/><Metric value={formatPace(week.activeMs,week.distanceM)} label="RITMO"/></View>
+        <View style={s.surface}><View style={s.spread}><Text style={s.label}>Objetivo semanal</Text><Text style={s.micro}>{(week.distanceM/1000).toFixed(1)} / {profile.weeklyKm} KM</Text></View><View style={s.progress}><View style={[s.progressFill,{width:`${progress*100}%`}]}/></View></View>
+        <Section title="Última carrera" link="Diario" onPress={()=>{setActivityView('Diario');setTab('Actividad');}}/>
+        {data.history[0]?<RunCard run={data.history[0]} onPress={()=>selectRun(data.history[0])}/>:<View style={s.empty}><FrameMark size={46} color={t.mist}/><Text style={s.h2}>Tu primer recuerdo</Text><Text style={s.muted}>Registra tu primera carrera y empieza a construir tu historia.</Text></View>}
+      </>}
+      {tab==='Comunidad'&&<>
+        <View style={s.heading}><Text style={s.micro}>02 / RUN TOGETHER</Text><Text style={s.display}>Comunidad.</Text><Text style={s.body}>Cada persona, una perspectiva.</Text></View>
+        <View style={s.feature}><View style={s.spread}><Text style={s.lightMicro}>RAW MOMENTS</Text><FrameMark size={28} color={t.signal}/></View><View style={s.duo}><View style={s.photoPlaceholder}><FrameMark size={54} color={t.signal}/><Text style={s.lightMicro}>01 / ENTORNO</Text></View><View style={s.photoPlaceholder2}><Text style={s.photoIndex}>02</Text><Text style={s.lightMicro}>TU PERSPECTIVA</Text></View></View><Text style={s.featureTitle}>Una carrera. Dos miradas.</Text><Text style={s.featureSub}>Tu momento en color, con tus kilómetros y tu historia.</Text></View>
+        <View style={s.empty}><Text style={s.h2}>Aún no hay publicaciones</Text><Text style={s.muted}>El feed social se activará cuando conectemos las cuentas y la privacidad de las fotos. No mostramos corredores ni publicaciones inventadas.</Text></View>
       </>}
       {tab==='Correr'&&<>
-        <Text style={styles.kicker}>01 / EN MOVIMIENTO</Text><Text style={styles.h1}>Correr.</Text>
-        <View style={styles.hero}><Text style={styles.heroSmall}>{running?'● EN CURSO':run?'EN PAUSA':'LISTO PARA SALIR'}</Text><Text style={styles.timer}>{formatTime(time)}</Text><Text style={styles.heroBody}>TIEMPO ACTIVO</Text><View style={styles.line}/><Text style={styles.distance}>{(meters/1000).toFixed(2)}<Text style={styles.unit}> km</Text></Text><Text style={styles.heroBody}>DISTANCIA</Text><Text style={styles.heroSmall}>RITMO MEDIO  /  {formatPace(time,meters)} min/km</Text></View>
-        <Text style={styles.muted}>{gps}</Text>
-        {run?.momentStatus==='offered'&&<View style={styles.signalCard}><Text style={styles.h2}>Tu Raw Moment.</Text><Text>Detente en un lugar seguro. La captura de cámara todavía no está disponible en esta versión.</Text><Action label="Omitir" onPress={()=>{const s=current.current;if(s.run)store({...s,run:{...s.run,momentStatus:'skipped'},checkpoint:Date.now()});}}/></View>}
-        {running?<Action label="Pausar" onPress={stop}/>:<Action label={busy?'Comprobando GPS…':run?'Reanudar':'Iniciar carrera'} onPress={startOrResume} disabled={!ready||busy} signal/>}
-        {run&&<Action label="Finalizar y guardar" onPress={finish}/>}
-        <Text style={styles.muted}>Prueba inicial: el registro se pausa al bloquear el móvil o salir de la app. El GPS en segundo plano está pendiente.</Text>
+        <View style={s.spread}><View style={s.heading}><Text style={s.micro}>03 / EN MOVIMIENTO</Text><Text style={s.display}>Correr.</Text></View><View style={s.status}><View style={[s.dot,{backgroundColor:running&&gps==='GPS conectado'?'#557C38':t.mist}]}/><Text style={s.micro}>{gps==='GPS conectado'?'GPS OK':running?'GPS…':'GPS'}</Text></View></View>
+        <View style={s.runPanel}><View style={s.spread}><Text style={s.lightMicro}>{running?'EN CURSO':run?'EN PAUSA':'LISTO PARA SALIR'}</Text><FrameMark size={30} color={t.signal}/></View><Text adjustsFontSizeToFit numberOfLines={1} style={s.timer}>{formatTime(time)}</Text><Text style={s.lightMicro}>TIEMPO ACTIVO</Text><View style={s.darkDivider}/><Text style={s.distance}>{(meters/1000).toFixed(2)}<Text style={s.distanceUnit}> km</Text></Text><Text style={s.lightMicro}>DISTANCIA</Text><View style={s.darkDivider}/><View style={s.spread}><Text style={s.lightMicro}>RITMO MEDIO</Text><Text style={s.pace}>{formatPace(time,meters)} <Text style={s.lightMicro}>/ KM</Text></Text></View></View>
+        <View style={s.surface}><View style={s.spread}><Text style={s.label}>Raw Moment</Text><FrameMark size={24} color={t.ink}/></View><View style={s.timeline}><View style={[s.timelineFill,{width:`${Math.min(100,time/600000*100)}%`}]}/><View style={s.timelineMarker}/></View><Text style={s.muted}>{run?.momentStatus==='skipped'?'Omitido en esta carrera.':run?.momentStatus==='offered'?'Tu momento ha llegado.': 'A partir de 10 minutos activos puede aparecer tu momento.'}</Text></View>
+        {run?.momentStatus==='offered'&&<View style={s.signalSurface}><Text style={s.h2}>Es tu momento.</Text><Text style={s.body}>La cámara aún no está habilitada. Puedes continuar sin foto.</Text><Action label="Continuar sin foto" onPress={()=>{const v=current.current;if(v.run)store({...v,run:{...v.run,momentStatus:'skipped'},checkpoint:Date.now()});}}/></View>}
+        {running?<Action label="Pausar carrera" onPress={stop} kind="signal"/>:<Action label={busy?'Comprobando GPS…':run?'Reanudar carrera':'Iniciar carrera'} onPress={startOrResume} disabled={!ready||busy} kind="signal"/>}
+        {run&&<Action label="Finalizar y guardar" onPress={finish} kind="outline"/>}
+        <Text style={s.muted}>En esta versión el GPS necesita la app abierta. Al bloquear el iPhone se pausa la carrera.</Text>
       </>}
-      {tab==='Memorias'&&<>
-        <Text style={styles.kicker}>02 / TU DIARIO</Text><Text style={styles.h1}>Memorias.</Text>
-        {data.history.length===0?<View style={styles.panel}><Text style={styles.h2}>Tu historia empieza aquí.</Text><Text style={styles.muted}>Las carreras que guardes aparecerán en tu diario privado.</Text></View>:data.history.map(r=><View key={r.id} style={styles.panel}><Text style={styles.kicker}>{new Date(r.startedAt).toLocaleDateString('es-ES')}</Text><Text style={styles.h1}>{(r.distanceM/1000).toFixed(2)} km</Text><Text style={styles.muted}>{formatTime(r.activeMs)} · {formatPace(r.activeMs,r.distanceM)} min/km</Text></View>)}
-        <Text style={styles.muted}>Historial guardado solo en este dispositivo.</Text>
+      {tab==='Actividad'&&<>
+        <View style={s.heading}><Text style={s.micro}>04 / TU EVOLUCIÓN</Text><Text style={s.display}>Actividad.</Text></View>
+        <View style={s.segment}>{(['Semana','Diario'] as const).map(x=><Pressable key={x} accessibilityRole="button" accessibilityState={{selected:activityView===x}} onPress={()=>setActivityView(x)} style={[s.segmentItem,activityView===x&&s.segmentSelected]}><Text style={[s.label,activityView===x&&{color:t.paper}]}>{x}</Text></Pressable>)}</View>
+        {activityView==='Semana'?<>
+          <View style={s.surface}><Text style={s.micro}>DISTANCIA ESTA SEMANA</Text><Text style={s.bigNumber}>{(week.distanceM/1000).toFixed(1)}<Text style={s.smallUnit}> km</Text></Text><WeekChart days={week.days}/><View style={s.divider}/><View style={s.statsRow}><Metric compact value={String(week.count)} label="CARRERAS"/><Metric compact value={formatTime(week.activeMs)} label="TIEMPO"/><Metric compact value={formatPace(week.activeMs,week.distanceM)} label="RITMO"/></View></View>
+          <View style={s.signalSurface}><Text style={s.micro}>TU META PERSONAL</Text><Text style={s.h2}>{profile.weeklyKm} km / semana</Text><View style={s.progress}><View style={[s.progressFill,{width:`${progress*100}%`}]}/></View><Text style={s.body}>{progress>=1?'Objetivo alcanzado.':`Te quedan ${Math.max(0,profile.weeklyKm-week.distanceM/1000).toFixed(1)} km para tu objetivo.`}</Text><Action label="Editar objetivo" kind="outline" onPress={openProfile}/></View>
+        </>:<>
+          <Section title="Tus recuerdos"/>
+          <Text style={s.muted}>Tu diario de carreras guardadas en este dispositivo.</Text>
+          {data.history.length===0?<View style={s.empty}><FrameMark size={48} color={t.mist}/><Text style={s.h2}>Un diario por escribir.</Text><Action label="Registrar una carrera" onPress={goRun}/></View>:data.history.map(r=><RunCard key={r.id} run={r} onPress={()=>selectRun(r)}/>)}
+        </>}
       </>}
       {tab==='Perfil'&&<>
-        <Text style={styles.kicker}>03 / TU ESPACIO</Text><Text style={styles.h1}>Perfil.</Text><View style={styles.panel}><Text style={styles.h2}>Corredor local</Text><Text style={styles.muted}>Versión de desarrollo 0.1.0</Text><Text style={styles.muted}>La cuenta, amigos y sincronización con Supabase todavía no están conectados.</Text></View>
+        <View style={s.heading}><Text style={s.micro}>05 / TU ESPACIO</Text><Text style={s.display}>Perfil.</Text></View>
+        <View style={s.profileHero}><View style={s.avatarLarge}><Text style={s.avatarBigText}>{profile.name.slice(0,1).toUpperCase()||'R'}</Text></View><Text style={s.h2}>{profile.name||'Tu nombre'}</Text><Text style={s.muted}>Perfil local · Solo tú puedes verlo</Text><Action label="Editar perfil" onPress={openProfile} kind="outline"/></View>
+        <View style={s.statsRow}><Metric value={String(data.history.length)} label="CARRERAS"/><Metric value={(total/1000).toFixed(1)} unit="km" label="TOTAL"/><Metric value={formatPace(data.history.reduce((n,r)=>n+r.activeMs,0),total)} label="RITMO"/></View>
+        <Pressable onPress={()=>{setActivityView('Diario');setTab('Actividad');}} style={s.surface}><View style={s.spread}><Text style={s.h2}>Mi diario</Text><Text style={s.arrow}>↗</Text></View><Text style={s.muted}>Recupera tus carreras y momentos.</Text></Pressable>
+        <View style={s.surface}><Text style={s.h2}>Privacidad</Text><Text style={s.muted}>Tus entrenamientos y tu perfil todavía se guardan en local. No se envían a ningún servidor.</Text></View>
       </>}
     </ScrollView>
-    <View style={styles.nav}>{(['Hoy','Correr','Memorias','Perfil'] as Tab[]).map((item,i)=><Pressable accessibilityRole="tab" accessibilityState={{selected:tab===item}} key={item} onPress={()=>setTab(item)} style={[styles.navItem,tab===item&&styles.selected]}><Text style={[styles.navIcon,tab===item&&{color:t.ink}]}>{['◫','▶','▤','○'][i]}</Text><Text style={[styles.navLabel,tab===item&&{fontWeight:'700',color:t.ink}]}>{item}</Text></Pressable>)}</View>
+    <Nav active={tab} onChange={setTab}/>
+    <Modal visible={detail!==null} animationType="slide" presentationStyle="pageSheet" onRequestClose={()=>setDetail(null)}>
+      <SafeAreaView style={s.safe}><View style={s.modalHeader}><Text style={s.micro}>RAW / RECAP</Text><Pressable onPress={()=>setDetail(null)} accessibilityRole="button" style={s.close}><Text style={s.label}>Cerrar</Text></Pressable></View>
+      {detail&&<ScrollView contentContainerStyle={s.content}><Text style={s.display}>Tu carrera.</Text><Text style={s.body}>{new Date(detail.startedAt).toLocaleString('es-ES')}</Text><View style={s.feature}><View style={s.spread}><Text style={s.lightMicro}>CARRERA GUARDADA</Text><FrameMark size={38} color={t.signal}/></View><Text style={s.distance}>{(detail.distanceM/1000).toFixed(2)} km</Text><View style={s.darkDivider}/><Text style={s.pace}>{formatTime(detail.activeMs)}</Text><Text style={s.lightMicro}>TIEMPO ACTIVO</Text><Text style={s.pace}>{formatPace(detail.activeMs,detail.distanceM)} /km</Text></View><View style={s.empty}><FrameMark size={48} color={t.mist}/><Text style={s.h2}>Un momento para recordar</Text><Text style={s.muted}>La captura y publicación de fotos llegarán cuando la cámara y las cuentas estén integradas.</Text></View><Action label="Hecho" onPress={()=>setDetail(null)} kind="signal"/></ScrollView>}</SafeAreaView>
+    </Modal>
+    <Modal visible={editProfile} animationType="slide" presentationStyle="pageSheet" onRequestClose={()=>setEditProfile(false)}><SafeAreaView style={s.safe}><View style={s.modalHeader}><Text style={s.micro}>MI PERFIL</Text><Pressable accessibilityRole="button" onPress={()=>setEditProfile(false)} style={s.close}><Text style={s.label}>Cancelar</Text></Pressable></View><ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled"><Text style={s.display}>Tu espacio.</Text><Text style={s.label}>Nombre</Text><TextInput style={s.input} value={nameDraft} onChangeText={setNameDraft} placeholder="Tu nombre" placeholderTextColor={t.mist} maxLength={60}/><Text style={s.label}>Objetivo semanal (km)</Text><TextInput style={s.input} value={goalDraft} onChangeText={setGoalDraft} keyboardType="decimal-pad" maxLength={6}/><Action label="Guardar" onPress={saveProfile} kind="signal"/></ScrollView></SafeAreaView></Modal>
   </SafeAreaView>;
 }
-function Metric({label,value}:{label:string;value:string}) {return <View style={[styles.panel,{flex:1}]}><Text style={styles.h2}>{value}</Text><Text style={styles.muted}>{label}</Text></View>;}
-function Action({label,onPress,signal=false,disabled=false}:{label:string;onPress:()=>void;signal?:boolean;disabled?:boolean}){return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={({pressed})=>[styles.action,signal&&styles.signal,(pressed||disabled)&&{opacity:.55}]}><Text style={[styles.actionText,signal&&{color:t.ink}]}>{label}</Text></Pressable>;}
-const styles=StyleSheet.create({
-  safe:{flex:1,backgroundColor:t.paper},header:{paddingHorizontal:22,paddingVertical:14,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},
-  brand:{fontSize:35,fontWeight:'900',letterSpacing:-2.8,color:t.ink},tag:{fontSize:10,letterSpacing:2,color:t.mist,fontWeight:'700'},
-  content:{paddingHorizontal:22,paddingTop:12,paddingBottom:24,gap:16},
-  kicker:{fontSize:11,fontWeight:'700',letterSpacing:1.6,color:t.mist},h1:{fontSize:48,fontWeight:'800',letterSpacing:-2.5,color:t.ink},h2:{fontSize:25,fontWeight:'700',letterSpacing:-.8,color:t.ink},
-  hero:{backgroundColor:t.ink,borderRadius:t.radius,padding:22,gap:17},heroSmall:{color:t.signal,fontSize:12,letterSpacing:1,fontWeight:'700'},heroTitle:{color:t.paper,fontSize:46,letterSpacing:-2,fontWeight:'800',lineHeight:49},heroBody:{color:'#D0D0C8',fontSize:13,letterSpacing:.5},line:{height:1,backgroundColor:'#525450'},
-  timer:{fontSize:51,fontWeight:'800',color:t.paper,fontVariant:['tabular-nums'],letterSpacing:-2},distance:{fontSize:55,fontWeight:'800',color:t.paper,fontVariant:['tabular-nums'],letterSpacing:-2},unit:{fontSize:21,fontWeight:'500'},
-  muted:{fontSize:14,color:t.mist,lineHeight:21},warning:{color:t.danger,fontSize:14},row:{flexDirection:'row',gap:12},panel:{padding:18,backgroundColor:t.stone,borderRadius:18,gap:8},
-  signalCard:{padding:18,borderRadius:18,backgroundColor:t.signal,gap:12},action:{minHeight:54,backgroundColor:t.ink,borderRadius:15,justifyContent:'center',alignItems:'center',paddingHorizontal:14},signal:{backgroundColor:t.signal},actionText:{color:t.paper,fontWeight:'700',fontSize:16},
-  nav:{flexDirection:'row',paddingHorizontal:12,paddingTop:8,paddingBottom:8,borderTopWidth:1,borderColor:t.stone,gap:4},navItem:{flex:1,alignItems:'center',justifyContent:'center',minHeight:55,borderRadius:16,gap:2},selected:{backgroundColor:t.signal},navIcon:{fontSize:23,color:t.mist},navLabel:{fontSize:11,color:t.mist},
-});
